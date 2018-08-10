@@ -1,0 +1,10 @@
+data/*
+work
+alignments
+diff
+vcf
+
+.nextflow
+.nextflow*
+
+!**.gitinclude
