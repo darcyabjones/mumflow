@@ -38,7 +38,7 @@ process dnadiff {
     file "${delta.baseName}.qdiff" into qdiff
     file "${delta.baseName}.rdiff" into rdiff
     file "${delta.baseName}.report" into dnadiffReports
-    file "${delta.baseName}.unqry" into unqrys
+    file "${delta.baseName}.unqry" optional true into unqrys
 
 
     """
@@ -49,7 +49,7 @@ process dnadiff {
 
 process snp2vcf {
 
-    container "python:3.6-alpine"
+    //container "python:3.6-alpine"
 
     publishDir "vcfs"
 
@@ -85,7 +85,7 @@ process coordsToBED {
 
 
 process genomeIndex {
-    container "quay.io/biocontainers/samtools"
+    container "quay.io/biocontainers/samtools:1.9--h46bd0b3_0"
     input:
     file reference from reference_file
 
@@ -126,8 +126,49 @@ process combinedBEDCoverage {
     file "combined.bedgraph" into combinedCoverage
 
     """
-    bedtools unionbedg -i *.bedgraph > combined.bedgraph
+    bedtools unionbedg -header -names *.bedgraph -i *.bedgraph > combined.bedgraph
+    """
+}
+
+percentages = [1, 2, 3, 4, 5, 7, 10, 20, 30, 40, 50, 60, 70, 80, 90, 93, 95, 96, 97, 98, 99]
+
+process compareCoverage {
+    publishDir "compare_coverages"
+
+    input:
+    file bg from combinedCoverage
+    val perc from percentages
+
+    output:
+    file "core_${perc}pc_regions.bedgraph" into coreRegions
+    file "duplicate_${perc}pc_regions.bedgraph" into duplicateRegions
+    file "single_${perc}pc_regions.bedgraph" into singleRegions
+
+    """
+    /usr/bin/env python3
+
+    import os
+    import pandas as pd
+
+    table = pd.read_table("${bg}")
+    table.columns = [os.path.split(os.path.splitext(c)[0])[1] for c in table.columns]
+
+    # Cheating a little bit here
+    table.drop(columns=["15FG031_contigs", "15FG039_contigs", "15FG046_contigs", "203FG217_contigs"], inplace=True) 
+    pc = ${perc} / 100
+
+    table2 = table[(table.iloc[:, 3:] > 0).mean(axis=1) > pc]
+    table2.to_csv("core_${perc}pc_regions.bedgraph", index=False, sep="\t")
+
+    table3 = table2[(table2.iloc[:, 3:] > 1).mean(axis=1) > pc]
+    table3.to_csv("duplicate_${perc}pc_regions.bedgraph", index=False, sep="\t")
+
+    table4 = table2[(table2.iloc[:, 3:] == 1).mean(axis=1) > pc]
+    table4.to_csv("single_${perc}pc_regions.bedgraph", index=False, sep="\t")
     """
 }
 
 
+covFiles = coreRegions.spread("core").concat( duplicateRegions.spread("duplicate"), singleRegions.spread("single") )
+
+covFiles.subscribe { println it }
