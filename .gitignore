@@ -8,3 +8,7 @@ vcf
 .nextflow*
 
 !**.gitinclude
+bed_alignments/**
+bedgraph_coverages/**
+diffs/**
+vcfs/**

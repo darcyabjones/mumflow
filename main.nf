@@ -38,7 +38,7 @@ process dnadiff {
     file "${delta.baseName}.qdiff" into qdiff
     file "${delta.baseName}.rdiff" into rdiff
     file "${delta.baseName}.report" into dnadiffReports
-    file "${delta.baseName}.unqry" into unqrys
+    file "${delta.baseName}.unqry" optional true into unqrys
 
 
     """
@@ -49,7 +49,7 @@ process dnadiff {
 
 process snp2vcf {
 
-    container "python:3.6-alpine"
+    //container "python:3.6-alpine"
 
     publishDir "vcfs"
 
@@ -85,7 +85,7 @@ process coordsToBED {
 
 
 process genomeIndex {
-    container "quay.io/biocontainers/samtools"
+    container "quay.io/biocontainers/samtools:1.9--h46bd0b3_0"
     input:
     file reference from reference_file
 
