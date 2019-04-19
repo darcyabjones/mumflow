@@ -1,45 +1,86 @@
 #!/usr/bin/env nextflow
 
-params.fastas = "$baseDir/data/genomes/*.fasta"
+/*
+vim: syntax=groovy
+-*- mode: groovy;-*-
+*/
 
-reference_file = file(params.reference)
-fasta_files = Channel.fromPath( params.fastas )
+params.genomes = false
+params.references = false
+
+
+if ( params.references ) {
+    references = Channel.from_path(
+        params.references,
+        checkIfExists: true,
+        type: "file"
+    )
+} else {
+    log.info "Hey I need some reference genomes please!"
+    exit 1
+}
+
+
+if ( params.genomes ) {
+    genomes = Channel.from_path(
+        params.genomes,
+        checkIfExists: true,
+        type: "file"
+    )
+} else {
+    log.info "Hey I need some genomes to align please!"
+    exit 1
+}
+
+
+references.into {
+    references4Cross;
+    references4Snp2Vcf;
+    references4GenomeIndex;
+}
+
+
+pairs = references
+    .cross(genomes)
+    .filter { r, g -> r.name != g.name }
+
 
 process align {
-    container "quay.io/biocontainers/mummer4:4.0.0beta2--pl526hfc679d8_2"
-    publishDir "alignments"
+    label "mummer"
+    publishDir "${params.outdir}/alignments/${ref.baseName}"
+    tag { "${ref.baseName} - ${query.baseName}" }
 
     input:
-    file reference from reference_file
-    file query from fasta_files
+    set file(ref), file(query) from pairs
 
     output:
-    file "${query.baseName}.delta" into deltas
+    set val(ref.baseName), file("${query.baseName}.delta") into deltas
 
     """
     nucmer --prefix=${query.baseName} ${reference} ${query}
     """
 }
 
-process dnadiff {
-    container "quay.io/biocontainers/mummer4:4.0.0beta2--pl526hfc679d8_2"
 
-    publishDir "diffs"
+process dnadiff {
+    label "mummer"
+    publishDir "${params.output}/diffs/${ref}"
+
+    tag { "${ref} - ${delta.baseName}" }
 
     input:
-    file delta from deltas
+    set val(ref), file(delta) from deltas
 
     output:
-    file "${delta.baseName}.snps" into snps
-    file "${delta.baseName}.1coords" into onecoords
-    file "${delta.baseName}.1delta" into onedeltas
-    file "${delta.baseName}.mcoords" into mcoords
-    file "${delta.baseName}.mdelta" into mdeltas
-    file "${delta.baseName}.qdiff" into qdiff
-    file "${delta.baseName}.rdiff" into rdiff
-    file "${delta.baseName}.report" into dnadiffReports
-    file "${delta.baseName}.unqry" optional true into unqrys
-
+    set val(ref), file("${delta.baseName}.snps") into snps
+    set val(ref), file("${delta.baseName}.1coords") into onecoords
+    set val(ref), file("${delta.baseName}.1delta") into onedeltas
+    set val(ref), file("${delta.baseName}.mcoords") into mcoords
+    set val(ref), file("${delta.baseName}.mdelta") into mdeltas
+    set val(ref), file("${delta.baseName}.qdiff") into qdiff
+    set val(ref), file("${delta.baseName}.rdiff") into rdiff
+    set val(ref), file("${delta.baseName}.report") into dnadiffReports
+    set val(ref), file("${delta.baseName}.unqry") optional true into unqrys
 
     """
     dnadiff --prefix=${delta.baseName} --delta ${delta}
@@ -48,32 +89,41 @@ process dnadiff {
 
 
 process snp2vcf {
+    label "python3"
+    publishDir "${params.outdir}/vcfs/${ref.baseName}"
 
-    //container "python:3.6-alpine"
-
-    publishDir "vcfs"
+    tag { "${ref.baseName} - ${snp.baseName}" }
 
     input:
-    file snp from snps
-    file reference from reference_file
+    set file(ref), file(snp) from references4Snp2Vcf
+        .map { [it.baseName, it] }
+        .combine( snps, by: 0 )
+        .map { rn, r, s -> [r, s] }
 
     output:
-    file "${snp.baseName}.vcf" into vcfs
+    set val(ref.baseName), file "${snp.baseName}.vcf" into vcfs
 
     """
-    snps2vcf.py --snp ${snp} --reference ${reference} --name ${snp.baseName} --output ${snp.baseName}.vcf
+    snps2vcf.py \
+      --snp ${snp} \
+      --reference ${reference} \
+      --name ${snp.baseName} \
+      --output ${snp.baseName}.vcf
     """
 }
 
 
 process coordsToBED {
-    publishDir "bed_alignments"
+    label "posix"
+    publishDir "${params.output}/diffs/${ref}"
+
+    tag { "${ref} - ${coord.baseName}" }
 
     input:
-    file coord from mcoords
+    set val(ref), file(coord) from mcoords
 
     output:
-    file "${coord.baseName}.bed" into coordsBEDs
+    set val(ref), file("${coord.baseName}.bed") into coordsBEDs
 
     """
     tail -n +5 ${coord} \
@@ -85,12 +135,15 @@ process coordsToBED {
 
 
 process genomeIndex {
-    container "quay.io/biocontainers/samtools:1.9--h46bd0b3_0"
+    label "samtools"
+
+    tag "${ref}"
+
     input:
-    file reference from reference_file
+    file ref from references4GenomeIndex
 
     output:
-    file "${reference}.fai" into referenceIndex
+    set file(ref), file("${ref}.fai") into referenceIndex
 
     """
     samtools faidx ${reference} > ${reference}.fai
@@ -99,15 +152,19 @@ process genomeIndex {
 
 
 process bedCoverage {
-    container "quay.io/biocontainers/bedtools:2.27.1--1"
-    publishDir "bedgraph_coverages"
+    label "bedtools"
+    publishDir "${params.outdir}/bedgraphs/${ref.baseName}"
+
+    tag "${ref.baseName} - ${bed.baseName}"
 
     input:
-    file bed from coordsBEDs
-    file index from referenceIndex
+    set file(ref), file(index), file(bed) from referenceIndex
+        .map { r, i -> [r.baseName, r, i] }
+        .combine( coordsBEDs, by: 0 )
+        .map { rn, r, i, b -> [r, i, b] }
 
     output:
-    file "${bed.baseName}.bedgraph" into coverageBEDs
+    set val(ref.baseName), file("${bed.baseName}.bedgraph") into coverageBEDs
 
     """
     bedtools genomecov -bga -g ${index} -i ${bed} > ${bed.baseName}.bedgraph
@@ -116,33 +173,45 @@ process bedCoverage {
 
 
 process combinedBEDCoverage {
-    container "quay.io/biocontainers/bedtools:2.27.1--1"
-    publishDir "bedgraph_coverages"
+    label "bedtools"
+    publishDir "${params.outdir}/bedgraphs"
+
+    tag "${ref}"
 
     input:
-    file "*.bedgraph" from coverageBEDs.collect()
+    set val(ref), file("*") from coverageBEDs.groupTuple(by: 0)
 
     output:
-    file "combined.bedgraph" into combinedCoverage
+    file "${ref.baseName}.bedgraph" into combinedCoverage
 
     """
-    bedtools unionbedg -header -names *.bedgraph -i *.bedgraph > combined.bedgraph
+    bedtools unionbedg \
+      -header \
+      -names *.bedgraph \
+      -i *.bedgraph \
+    > ${ref.baseName}.bedgraph
     """
 }
 
-percentages = [1, 2, 3, 4, 5, 7, 10, 20, 30, 40, 50, 60, 70, 80, 90, 93, 95, 96, 97, 98, 99]
+
+/*
+percentages = [1, 2, 3, 4, 5, 7, 10, 20, 30, 40, 50,
+               60, 70, 80, 90, 93, 95, 96, 97, 98, 99]
 
 process compareCoverage {
-    publishDir "compare_coverages"
+    label "python3"
+    publishDir "${params.outdir}/core_accessory/${bg.baseName}/${perc}"
+
+    tag "${bg.baseName} - ${perc}"
 
     input:
     file bg from combinedCoverage
-    val perc from percentages
+    each val perc from percentages
 
     output:
-    file "core_${perc}pc_regions.bedgraph" into coreRegions
-    file "duplicate_${perc}pc_regions.bedgraph" into duplicateRegions
-    file "single_${perc}pc_regions.bedgraph" into singleRegions
+    file "core.bedgraph" into coreRegions
+    file "duplicate.bedgraph" into duplicateRegions
+    file "single.bedgraph" into singleRegions
 
     """
     /usr/bin/env python3
@@ -150,25 +219,19 @@ process compareCoverage {
     import os
     import pandas as pd
 
-    table = pd.read_table("${bg}")
+    table = pd.read_csv("${bg}", sep="\t")
     table.columns = [os.path.split(os.path.splitext(c)[0])[1] for c in table.columns]
 
-    # Cheating a little bit here
-    table.drop(columns=["15FG031_contigs", "15FG039_contigs", "15FG046_contigs", "203FG217_contigs"], inplace=True) 
     pc = ${perc} / 100
 
     table2 = table[(table.iloc[:, 3:] > 0).mean(axis=1) > pc]
-    table2.to_csv("core_${perc}pc_regions.bedgraph", index=False, sep="\t")
+    table2.to_csv("core.bedgraph", index=False, sep="\t")
 
     table3 = table2[(table2.iloc[:, 3:] > 1).mean(axis=1) > pc]
-    table3.to_csv("duplicate_${perc}pc_regions.bedgraph", index=False, sep="\t")
+    table3.to_csv("duplicate.bedgraph", index=False, sep="\t")
 
     table4 = table2[(table2.iloc[:, 3:] == 1).mean(axis=1) > pc]
-    table4.to_csv("single_${perc}pc_regions.bedgraph", index=False, sep="\t")
+    table4.to_csv("single.bedgraph", index=False, sep="\t")
     """
 }
-
-
-covFiles = coreRegions.spread("core").concat( duplicateRegions.spread("duplicate"), singleRegions.spread("single") )
-
-covFiles.subscribe { println it }
+*/
