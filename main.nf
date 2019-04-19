@@ -10,7 +10,7 @@ params.references = false
 
 
 if ( params.references ) {
-    references = Channel.from_path(
+    references = Channel.fromPath(
         params.references,
         checkIfExists: true,
         type: "file"
@@ -22,7 +22,7 @@ if ( params.references ) {
 
 
 if ( params.genomes ) {
-    genomes = Channel.from_path(
+    genomes = Channel.fromPath(
         params.genomes,
         checkIfExists: true,
         type: "file"
@@ -40,13 +40,14 @@ references.into {
 }
 
 
-pairs = references
-    .cross(genomes)
+pairs = references4Cross
+    .combine(genomes)
     .filter { r, g -> r.name != g.name }
 
 
 process align {
     label "mummer"
+    label "medium_task"
     publishDir "${params.outdir}/alignments/${ref.baseName}"
     tag { "${ref.baseName} - ${query.baseName}" }
 
@@ -57,14 +58,15 @@ process align {
     set val(ref.baseName), file("${query.baseName}.delta") into deltas
 
     """
-    nucmer --prefix=${query.baseName} ${reference} ${query}
+    nucmer --threads=${task.cpus} --prefix=${query.baseName} ${ref} ${query}
     """
 }
 
 
 process dnadiff {
     label "mummer"
-    publishDir "${params.output}/diffs/${ref}"
+    label "small_task"
+    publishDir "${params.outdir}/diffs/${ref}"
 
     tag { "${ref} - ${delta.baseName}" }
 
@@ -90,7 +92,8 @@ process dnadiff {
 
 process snp2vcf {
     label "python3"
-    publishDir "${params.outdir}/vcfs/${ref.baseName}"
+    label "small_task"
+    publishDir { "${params.outdir}/vcfs/${ref.baseName}" }
 
     tag { "${ref.baseName} - ${snp.baseName}" }
 
@@ -101,12 +104,12 @@ process snp2vcf {
         .map { rn, r, s -> [r, s] }
 
     output:
-    set val(ref.baseName), file "${snp.baseName}.vcf" into vcfs
+    set val(ref.baseName), file("${snp.baseName}.vcf") into vcfs
 
     """
     snps2vcf.py \
       --snp ${snp} \
-      --reference ${reference} \
+      --reference ${ref} \
       --name ${snp.baseName} \
       --output ${snp.baseName}.vcf
     """
@@ -115,7 +118,8 @@ process snp2vcf {
 
 process coordsToBED {
     label "posix"
-    publishDir "${params.output}/diffs/${ref}"
+    label "small_task"
+    publishDir "${params.outdir}/diffs/${ref}"
 
     tag { "${ref} - ${coord.baseName}" }
 
@@ -136,6 +140,7 @@ process coordsToBED {
 
 process genomeIndex {
     label "samtools"
+    label "small_task"
 
     tag "${ref}"
 
@@ -146,13 +151,14 @@ process genomeIndex {
     set file(ref), file("${ref}.fai") into referenceIndex
 
     """
-    samtools faidx ${reference} > ${reference}.fai
+    samtools faidx ${ref} > ${ref}.fai
     """
 }
 
 
 process bedCoverage {
     label "bedtools"
+    label "small_task"
     publishDir "${params.outdir}/bedgraphs/${ref.baseName}"
 
     tag "${ref.baseName} - ${bed.baseName}"
@@ -174,6 +180,7 @@ process bedCoverage {
 
 process combinedBEDCoverage {
     label "bedtools"
+    label "small_task"
     publishDir "${params.outdir}/bedgraphs"
 
     tag "${ref}"
@@ -185,9 +192,11 @@ process combinedBEDCoverage {
     file "${ref.baseName}.bedgraph" into combinedCoverage
 
     """
+    NAMES=( *.bedgraph )
+
     bedtools unionbedg \
       -header \
-      -names *.bedgraph \
+      -names \${NAMES[@]%.bedgraph} \
       -i *.bedgraph \
     > ${ref.baseName}.bedgraph
     """
@@ -200,6 +209,8 @@ percentages = [1, 2, 3, 4, 5, 7, 10, 20, 30, 40, 50,
 
 process compareCoverage {
     label "python3"
+    label "small_task"
+
     publishDir "${params.outdir}/core_accessory/${bg.baseName}/${perc}"
 
     tag "${bg.baseName} - ${perc}"
