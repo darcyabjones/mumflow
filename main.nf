@@ -45,7 +45,7 @@ pairs = references4Cross
     .filter { r, g -> r.name != g.name }
 
 
-process align {
+process mumalign {
     label "mummer"
     label "medium_task"
     publishDir "${params.outdir}/alignments/${ref.baseName}"
@@ -58,7 +58,11 @@ process align {
     set val(ref.baseName), file("${query.baseName}.delta") into deltas
 
     """
-    nucmer --threads=${task.cpus} --prefix=${query.baseName} ${ref} ${query}
+    nucmer \
+      --threads=${task.cpus} \
+      --delta=${query.baseName}.delta \
+      ${ref} \
+      ${query}
     """
 }
 
@@ -116,6 +120,11 @@ process snp2vcf {
 }
 
 
+/*
+ * Convert coords to awk.
+ * Note that the output of show-coords and dnadiff are slightly different.
+ * This is for mcoords from dnadiff.
+ */
 process coordsToBED {
     label "posix"
     label "small_task"
@@ -130,8 +139,7 @@ process coordsToBED {
     set val(ref), file("${coord.baseName}.bed") into coordsBEDs
 
     """
-    tail -n +5 ${coord} \
-    | awk '{ printf "%s\\t%s\\t%s\\t\\.\\t+\\t%s\\tfiltered\\n", \$12, \$1-1, \$2, \$7 }' \
+    awk '{ printf "%s\\t%s\\t%s\\t\\.\\t+\\t%s\\tfiltered\\n", \$12, \$1-1, \$2, \$7 }' ${coord} \
     | sort -k1,1 -k2,2n \
     > ${coord.baseName}.bed
     """
@@ -155,16 +163,21 @@ process genomeIndex {
     """
 }
 
+referenceIndex.into {
+    referenceIndex4BedCoverage;
+    referenceIndex4MakeWindows;
+    referenceIndex4MakePBWindows;
+    referenceIndex4PlotCoverages;
+}
 
 process bedCoverage {
     label "bedtools"
     label "small_task"
-    publishDir "${params.outdir}/bedgraphs/${ref.baseName}"
 
     tag "${ref.baseName} - ${bed.baseName}"
 
     input:
-    set file(ref), file(index), file(bed) from referenceIndex
+    set file(ref), file(index), file(bed) from referenceIndex4BedCoverage
         .map { r, i -> [r.baseName, r, i] }
         .combine( coordsBEDs, by: 0 )
         .map { rn, r, i, b -> [r, i, b] }
@@ -181,7 +194,7 @@ process bedCoverage {
 process combinedBEDCoverage {
     label "bedtools"
     label "small_task"
-    publishDir "${params.outdir}/bedgraphs"
+    publishDir "${params.outdir}/bedgraphs/${ref}"
 
     tag "${ref}"
 
@@ -189,7 +202,7 @@ process combinedBEDCoverage {
     set val(ref), file("*") from coverageBEDs.groupTuple(by: 0)
 
     output:
-    file "${ref.baseName}.bedgraph" into combinedCoverage
+    set val(ref), file("${ref}.bedgraph") into combinedCoverage
 
     """
     NAMES=( *.bedgraph )
@@ -198,7 +211,139 @@ process combinedBEDCoverage {
       -header \
       -names \${NAMES[@]%.bedgraph} \
       -i *.bedgraph \
-    > ${ref.baseName}.bedgraph
+    > ${ref}.bedgraph
+    """
+}
+
+combinedCoverage.into {
+    combinedCoverage4GetPBCoverage;
+}
+
+
+window_sizes = [10000, 50000, 100000]
+
+process makeWindows {
+
+    label "bedtools"
+    label "small_task"
+
+    tag "${window_size}"
+
+    input:
+    set file(ref), file(index) from referenceIndex4MakeWindows
+    each val window_size from window_sizes
+
+    output:
+    set val(ref.baseName), val(window_size),
+        file("windows_${window_size}.bed") into windows
+
+    """
+    bedtools makewindows \
+      -g "${index}" \
+      -w "${window_size}" \
+    | sort -k1,1 -k2,2n \
+    > "windows_${window_size}.bed"
+    """
+}
+
+process makePBWindows {
+    label "bedtools"
+    label "small_task"
+
+    tag "${ref.baseName}"
+
+    input:
+    set file(ref), file(index) from referenceIndex4MakePBWindows
+
+    output:
+    set val(ref.baseName), file("windows.bed") into pbWindows
+
+    """
+    bedtools makewindows \
+      -g "${index}" \
+      -w 1 \
+    | sort -k1,1 -k2,2n \
+    > "windows.bed"
+    """
+}
+
+process getPBCoverage {
+
+    label "bedtools"
+    label "small_task"
+
+    tag "${ref}"
+
+    input:
+    set val(ref), file(pb_window), file(coverage) from pbWindows
+        .combine( combinedCoverage4GetPBCoverage, by: 0 )
+
+    output:
+    set val(ref), file("pbcov.bedgraph") into pbCoverages
+
+    """
+    bedtools intersect \
+      -a "${coverage}" \
+      -b "${pb_window}" \
+      -sorted \
+      -header \
+    > "pbcov.bedgraph"
+    """
+}
+
+process getMeanWindowedCoverage {
+
+    label "bedtools"
+    label "small_task"
+
+    tag "${ref} - ${window_size}"
+
+    publishDir "${params.outdir}/bedgraphs/${ref}"
+
+    input:
+    set val(ref), val(window_size), file("windows.bed"),
+        file("pbcov.bedgraph") from windows
+            .combine( pbCoverages, by: 0 )
+
+    output:
+    set val(ref), val(window_size),
+        file("cov_mean_${window_size}.bedgraph") into meanWindowedCoverage
+
+    """
+    NCOLS=\$(head -n 1 pbcov.bedgraph | wc -w)
+    COLS=\$(seq 4 \${NCOLS} | tr '\n' ',' | sed 's/,\$//')
+
+    head -n 1 "pbcov.bedgraph" > "cov_mean_${window_size}.bedgraph"
+
+    bedtools map \
+      -a "windows.bed" \
+      -b "pbcov.bedgraph" \
+      -c "\${COLS}" \
+      -o mean \
+    >> "cov_mean_${window_size}.bedgraph"
+    """
+}
+
+
+process plotCoverages {
+
+    label "r"
+    label "small_task"
+
+    tag "${ref} - ${window_size}"
+
+    publishDir "${params.outdir}/coverage_plots"
+
+    input:
+    set val(ref), file(index) val(window_size), file(bg) from referenceIndex4MakePBWindows
+        .map { f, i -> [f.baseName, i] }
+        .combine( meanWindowedCoverage by: 0 )
+
+    output:
+    set val(ref), val(window_size), file("${ref}") into coveragePlots
+
+    """
+    plot_circos.R --bedgraph "${bg}" --faidx "${index}" --outdir "${ref}"
     """
 }
 
