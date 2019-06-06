@@ -65,6 +65,11 @@ stripper <- function(str) {
 }
 
 main <- function(args) {
+  if (args$version) {
+    cat(VERSION, file=stdout())
+    quit(save = "no", status = 0, runLast = FALSE)
+  }
+
   validate_file(args$faidx)
   validate_file(args$bedgraph)
   validate_file(args$outdir)

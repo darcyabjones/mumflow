@@ -1,0 +1,199 @@
+bootstrap: docker
+From: debian:stretch-20190228-slim
+Stage: init
+
+%post
+    mkdir /build
+
+    cat <<'EOF' > /build/init.sh
+        export BUILD_DIR="/build"
+        export ENV_FILE="${BUILD_DIR}/env.sh"
+
+        # Adds an environment variable to singularity env.
+        add_env () {
+          for arg in $@; do
+            eval echo "export ${arg}=\"\${${arg}}\"" >> ${SINGULARITY_ENVIRONMENT}
+            eval echo "export ${arg}=\"\${${arg}}\"" >> ${ENV_FILE}
+          done
+        }
+
+        # Adds a path to the environment, without overwriting it.
+        prepend_path () {
+          eval echo "export ${1}=\"${2}:\\\${${1}}\"" >> ${SINGULARITY_ENVIRONMENT}
+          eval echo "export ${1}=\"${2}:\\\${${1}}\"" >> ${ENV_FILE}
+          eval export ${1}="${2}:\${${1}}"
+        }
+
+        NCPU="$(grep -c ^processor /proc/cpuinfo)"
+
+        # Set these with empty defaults to avoid using unset variables in path adds
+        export PATH="${PATH-}"
+        export INCLUDE="${INCLUDE-}"
+        export CPATH="${CPATH-}"
+        export LIBRARY_PATH="${LIBRARY_PATH-}"
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
+        export LD_RUN_PATH="${LD_RUN_PATH-}"
+
+        # We will build everything in here
+        mkdir -p "${BUILD_DIR}"
+EOF
+
+
+Bootstrap: docker
+From: debian:stretch-20190228-slim
+Stage: mummer_builder
+
+%files from init
+    /build/init.sh
+
+%post
+    set -eux
+    . /build/init.sh
+    export MUMMER_VERSION=v4.0.0beta2
+    export MUMMER_PREFIX=/opt/mummer/v4.0.0beta2
+    export MUMMER_URL=https://github.com/mummer4/mummer/archive/v4.0.0beta2.tar.gz
+    add_env MUMMER_VERSION MUMMER_PREFIX
+    prepend_path PATH /opt/mummer/v4.0.0beta2/bin
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      autoconf \
+      automake \
+      build-essential \
+      libtool \
+      wget \
+      yaggo
+
+    rm -rf /var/lib/apt/lists/*
+
+    cd /build
+    wget --no-check-certificate -O mummer.tar.gz "${MUMMER_URL}"
+    tar -zxf mummer.tar.gz
+    cd mummer*
+
+    autoreconf -fi
+    ./configure --prefix="${MUMMER_PREFIX}"
+    make
+    make install
+
+
+Bootstrap: docker
+From: debian:stretch-20190228-slim
+Stage: bedtools_builder
+
+%files from init
+    /build/init.sh
+
+%post
+    set -eux
+    . /build/init.sh
+
+    export BEDTOOLS_VERSION=v2.28.0
+    export BEDTOOLS_PREFIX=/opt/bedtools/v2.28.0
+    export BEDTOOLS_URL=https://github.com/arq5x/bedtools2/archive/v2.28.0.tar.gz
+
+    add_env BEDTOOLS_VERSION BEDTOOLS_PREFIX
+    prepend_path PATH /opt/bedtools/v2.28.0/bin
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      libbz2-dev \
+      liblzma-dev \
+      python \
+      wget \
+      zlib1g-dev
+    rm -rf /var/lib/apt/lists/*
+
+    cd /build
+    wget --no-check-certificate -O bedtools.tar.gz "${BEDTOOLS_URL}"
+    tar -zxf bedtools.tar.gz
+    rm bedtools.tar.gz
+    cd bedtools*
+
+    make
+    make prefix="${BEDTOOLS_PREFIX}" install
+
+
+Bootstrap: docker
+From: debian:stretch-20190228-slim
+Stage: final
+
+%labels
+    Author "darcy.ab.jones@gmail.com"
+    Version "v0.0.1"
+
+%help
+    This is some help text
+
+%test
+    echo "Can add tests here"
+
+%files from mummer_builder
+    /opt/mummer
+    /build/env.sh /build/mummer_builder.sh
+
+%files from bedtools_builder
+    /opt/bedtools
+    /build/env.sh /build/bedtools_builder.sh
+
+%post
+    set -eu
+
+    cat /build/*.sh >> ${SINGULARITY_ENVIRONMENT}
+    export DEBIAN_FRONTEND=noninteractive
+
+    # This prevents java install from panicking
+    mkdir -p /usr/share/man/man1
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      dirmngr \
+      fig2dev \
+      gawk \
+      gnupg \
+      gnuplot-nox \
+      libbz2-1.0 \
+      libgomp1 \
+      locales \
+      lzma \
+      perl \
+      python \
+      python3 \
+      sed \
+      xfig \
+      zlib1g
+
+    echo "deb http://cloud.r-project.org/bin/linux/debian stretch-cran35/" >> /etc/apt/sources.list
+
+    # The apt-key command seems to randomly fail, possibly weird network.
+    # This just retries it up to 5 times.
+    n=0
+    until [ $n -ge 5 ]
+    do
+      apt-key adv --keyserver keys.gnupg.net --recv-key E19F5F87128899B192B1A2C2AD5F960A256A04AF && break
+      n=$[$n+1]
+      sleep 3
+    done
+
+    if [ $n -ge 5 ]
+    then
+      echo "Could not add gpg key :("
+      exit 1
+    fi
+
+    apt-get update
+    apt-get install -y --no-install-recommends -t stretch-cran35 \
+      r-base \
+      r-base-dev
+
+    R -e 'install.packages(c("ape", "circlize", "dendextend", "optparse", "tidyr"))'
+    rm -rf /var/lib/apt/lists/*
+
+    # Set locales for perl
+    sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+    dpkg-reconfigure --frontend=noninteractive locales
+    update-locale LANG=en_US.UTF-8
+
+    echo 'export LANG="en_US.UTF-8"' >> ${SINGULARITY_ENVIRONMENT}
+    export LANG="en_US.UTF-8"

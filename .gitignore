@@ -7,6 +7,8 @@ vcf
 .nextflow
 .nextflow*
 
+*.sif
+
 !**.gitinclude
 bed_alignments/**
 bedgraph_coverages/**
