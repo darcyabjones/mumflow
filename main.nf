@@ -231,7 +231,7 @@ process makeWindows {
 
     input:
     set file(ref), file(index) from referenceIndex4MakeWindows
-    each val window_size from window_sizes
+    each window_size from window_sizes
 
     output:
     set val(ref.baseName), val(window_size),
@@ -335,9 +335,9 @@ process plotCoverages {
     publishDir "${params.outdir}/coverage_plots"
 
     input:
-    set val(ref), file(index) val(window_size), file(bg) from referenceIndex4MakePBWindows
+    set val(ref), file(index), val(window_size), file(bg) from referenceIndex4PlotCoverages
         .map { f, i -> [f.baseName, i] }
-        .combine( meanWindowedCoverage by: 0 )
+        .combine( meanWindowedCoverage, by: 0 )
 
     output:
     set val(ref), val(window_size), file("${ref}") into coveragePlots
