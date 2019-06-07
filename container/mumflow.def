@@ -117,11 +117,87 @@ Stage: bedtools_builder
 
 Bootstrap: docker
 From: debian:stretch-20190228-slim
+Stage: htslib_builder
+
+%files from init
+    /build/init.sh
+
+%post
+    set -eux
+
+    . /build/init.sh
+
+    HTSLIB_VERSION="1.9"
+    HTSLIB_PREFIX="/opt/htslib/${HTSLIB_VERSION}"
+    HTSLIB_REPO="https://github.com/samtools/htslib.git"
+
+    SAMTOOLS_VERSION="1.9"
+    SAMTOOLS_PREFIX="/opt/samtools/${SAMTOOLS_VERSION}"
+    SAMTOOLS_REPO="https://github.com/samtools/samtools.git"
+
+    add_env HTSLIB_PREFIX HTSLIB_VERSION
+    add_env SAMTOOLS_PREFIX SAMTOOLS_VERSION
+
+    prepend_path PATH "${SAMTOOLS_PREFIX}/bin:${HTSLIB_PREFIX}/bin"
+    prepend_path CPATH "${HTSLIB_PREFIX}/include"
+    prepend_path LIBRARY_PATH "${HTSLIB_PREFIX}/lib"
+    prepend_path LD_LIBRARY_PATH "${HTSLIB_PREFIX}/lib"
+
+
+    apt-get update
+    apt-get install -y \
+      autoconf \
+      build-essential \
+      git \
+      libbz2-dev \
+      libcurl4-openssl-dev \
+      liblzma-dev \
+      libncurses5-dev \
+      zlib1g-dev
+
+    # Runtime libraries given by
+    # libbz2-1.0 \
+    # libcurl3 \
+    # libncurses5
+    # lzma \
+    # zlib1g
+
+    rm -rf /var/lib/apt/lists/*
+
+
+    cd "${BUILD_DIR}"
+    git clone "${HTSLIB_REPO}" htslib && cd htslib
+    git fetch --tags
+    git checkout "${HTSLIB_VERSION}"
+    autoheader
+    autoconf
+    ./configure --prefix="${HTSLIB_PREFIX}" --enable-libcurl
+    make -j "${NCPU}"
+    make -j "${NCPU}" install
+
+
+    cd "${BUILD_DIR}"
+    git clone "${SAMTOOLS_REPO}" samtools && cd samtools
+    git fetch --tags
+    git checkout "${SAMTOOLS_VERSION}"
+    autoheader
+    autoconf
+
+    ./configure \
+      --prefix="${SAMTOOLS_PREFIX}" \
+      --with-htslib="${HTSLIB_PREFIX}"
+
+    make -j "${NCPU}"
+    make -j "${NCPU}" install
+
+
+Bootstrap: docker
+From: debian:stretch-20190228-slim
 Stage: final
 
 %labels
     Author "darcy.ab.jones@gmail.com"
-    Version "v0.0.1"
+    Version "v0.0.2"
 
 %help
     This is some help text
@@ -136,6 +212,11 @@ Stage: final
 %files from bedtools_builder
     /opt/bedtools
     /build/env.sh /build/bedtools_builder.sh
+
+%files from htslib_builder
+    /opt/htslib
+    /opt/samtools
+    /build/env.sh /build/htslib_builder.sh
 
 %post
     set -eu
@@ -154,6 +235,8 @@ Stage: final
       gnupg \
       gnuplot-nox \
       libbz2-1.0 \
+      libcurl3 \
+      libncurses5 \
       libgomp1 \
       locales \
       lzma \
@@ -182,6 +265,8 @@ Stage: final
       exit 1
     fi
 
+    # I cant seem to get this to work without installing a bunch of compilation software.
+    # R seems like it isnt great for small containers.
     apt-get update
     apt-get install -y --no-install-recommends -t stretch-cran35 \
       r-base \
