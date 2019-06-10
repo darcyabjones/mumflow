@@ -238,11 +238,13 @@ process makeWindows {
         file("windows_${window_size}.bed") into windows
 
     """
-    bedtools makewindows \
-      -g "${index}" \
-      -w "${window_size}" \
-    | sort -k1,1 -k2,2n \
-    > "windows_${window_size}.bed"
+    bedtools makewindows -g "${index}" -w "${window_size}" > windows.tmp.bed
+    
+    # Doing this in 2 steps (rather than piping) is necessary to avoid
+    # overlayfs requirements in singularity.
+    sort -k1,1 -k2,2n windows.tmp.bed > "windows_${window_size}.bed"
+
+    rm -f windows.tmp.bed
     """
 }
 
@@ -259,11 +261,13 @@ process makePBWindows {
     set val(ref.baseName), file("windows.bed") into pbWindows
 
     """
-    bedtools makewindows \
-      -g "${index}" \
-      -w 1 \
-    | sort -k1,1 -k2,2n \
-    > "windows.bed"
+    bedtools makewindows -g "${index}" -w 1 > windows.tmp.bed
+
+    # Doing this in 2 steps is necessary to avoid overlayfs
+    # requirements in singularity. (because sort uses tmp files).
+    sort -k1,1 -k2,2n windows.tmp.bed > windows.bed
+
+    rm -f windows.tmp.bed
     """
 }
 
