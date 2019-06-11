@@ -7,7 +7,7 @@ vim: syntax=groovy
 
 params.genomes = false
 params.references = false
-params.gffs = false
+params.genes = false
 params.promer = false
 
 
@@ -34,21 +34,21 @@ if ( params.genomes ) {
     exit 1
 }
 
-if ( params.gffs ) {
-    gffs = Channel.fromPath(
-        params.gffs,
+if ( params.genes ) {
+    genes = Channel.fromPath(
+        params.genes,
         checkIfExists: true,
         type: "file"
     ).map { f -> [f.baseName, f ] }
 } else {
-    gffs = Channel.empty()
+    genes = Channel.empty()
 }
 
 references.into {
     references4Cross;
     references4Snp2Vcf;
     references4GenomeIndex;
-    references4MergeGFFs;
+    references4MergeGenes;
 }
 
 
@@ -56,15 +56,15 @@ references.into {
 // Filter out refs without gff provided.
 // Note we could use join instead of combine, which would allow us
 // to get rid of the filter, but we wouldn't be able fail on unmatched gff.
-refWithGFF = references4MergeGFFs
+refWithGenes = references4MergeGenes
     .map { f -> [ f.baseName, f ] }
-    .combine( gffs, by: 0 )
+    .combine( genes, by: 0 )
     .map { n, f, g ->
         if ( f == null || f == '' ) {
-            log.error "The GFF ${g.name} could not be matched to any " +
-                "reference genome names."
+            log.error "The annotation file ${g.name} specified in --genes could " +
+                "not be matched to any reference genome names."
 
-            log.error "Please make sure the gff3 and reference genomes " +
+            log.error "Please make sure the annotation file and reference genomes " +
                 "have the same basename (up to the last extension)."
 
             exit 1
@@ -430,8 +430,8 @@ process pavGenes {
 
     input:
     set val(ref), file("pavs.bedgraph"), file("genome.fasta"),
-        file("genes.gff3") from foundPAVs
-            .join( refWithGFF, remainder: false, by: 0 )
+        file(genes) from foundPAVs
+            .join( refWithGenes, remainder: false, by: 0 )
 
     output:
     set val(ref), file("gene_pavs.bedgraph") into genePAVs
@@ -439,7 +439,7 @@ process pavGenes {
     """
     bedtools intersect \
       -a pavs.bedgraph \
-      -b genes.gff3 \
+      -b "${genes}" \
       -header \
       -u \
     > gene_pavs.bedgraph
