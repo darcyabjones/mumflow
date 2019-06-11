@@ -7,6 +7,8 @@ vim: syntax=groovy
 
 params.genomes = false
 params.references = false
+params.gffs = false
+params.promer = false
 
 
 if ( params.references ) {
@@ -32,12 +34,44 @@ if ( params.genomes ) {
     exit 1
 }
 
+if ( params.gffs ) {
+    gffs = Channel.fromPath(
+        params.gffs,
+        checkIfExists: true,
+        type: "file"
+    ).map { f -> [f.baseName, f ] }
+} else {
+    gffs = Channel.empty()
+}
 
 references.into {
     references4Cross;
     references4Snp2Vcf;
     references4GenomeIndex;
+    references4MergeGFFs;
 }
+
+
+// Exit if gff provided that can't be matched.
+// Filter out refs without gff provided.
+// Note we could use join instead of combine, which would allow us
+// to get rid of the filter, but we wouldn't be able fail on unmatched gff.
+refWithGFF = references4MergeGFFs
+    .map { f -> [ f.baseName, f ] }
+    .combine( gffs, by: 0 )
+    .map { n, f, g ->
+        if ( f == null || f == '' ) {
+            log.error "The GFF ${g.name} could not be matched to any " +
+                "reference genome names."
+
+            log.error "Please make sure the gff3 and reference genomes " +
+                "have the same basename (up to the last extension)."
+
+            exit 1
+        };
+        [n, f, g]
+    }
+    .filter { n, f, g -> (g == null || g == '') }
 
 
 pairs = references4Cross
@@ -57,11 +91,18 @@ process mumalign {
     output:
     set val(ref.baseName), file("${query.baseName}.delta") into deltas
 
+    script:
+    if (params.promer) {
+        exe = "promer"
+    } else {
+        exe = "nucmer"
+    }
+
     """
-    nucmer \
+    ${exe} \
       --threads=${task.cpus} \
       --maxmatch \
-      --delta=${query.baseName}.delta \
+      --prefix=${query.baseName} \
       ${ref} \
       ${query}
     """
@@ -218,6 +259,7 @@ process combinedBEDCoverage {
 
 combinedCoverage.into {
     combinedCoverage4GetPBCoverage;
+    combinedCoverage4FindPAV;
 }
 
 
@@ -240,7 +282,7 @@ process makeWindows {
 
     """
     bedtools makewindows -g "${index}" -w "${window_size}" > windows.tmp.bed
-    
+
     # Doing this in 2 steps (rather than piping) is necessary to avoid
     # overlayfs requirements in singularity.
     sort -k1,1 -k2,2n windows.tmp.bed > "windows_${window_size}.bed"
@@ -349,6 +391,58 @@ process plotCoverages {
 
     """
     plot_circos.R --bedgraph "${bg}" --faidx "${index}" --outdir "${window_size}"
+    """
+}
+
+
+process findPAV {
+
+    label "python3"
+    label "small_task"
+    tag "${ref}"
+
+    publishDir "${params.outdir}/pav/${ref}"
+
+    input:
+    set val(ref), file(bg) from combinedCoverage4FindPAV
+
+    output:
+    set val(ref), file("pavs.bedgraph") into foundPAVs
+
+    """
+    find_pavs.py \
+      --infile "${bg}" \
+      --outfile pavs.bedgraph \
+      --tol 20 \
+      --min-length 50 \
+      --proportion-repeats 1.0
+    """
+}
+
+
+process pavGenes {
+
+    label "bedtools"
+    label "small_task"
+    tag "${ref}"
+
+    publishDir "${params.outdir}/pav/${ref}"
+
+    input:
+    set val(ref), file("pavs.bedgraph"), file("genome.fasta"),
+        file("genes.gff3") from foundPAVs
+            .join( refWithGFF, remainder: false, by: 0 )
+
+    output:
+    set val(ref), file("gene_pavs.bedgraph") into genePAVs
+
+    """
+    bedtools intersect \
+      -a pavs.bedgraph \
+      -b genes.gff3 \
+      -header \
+      -u \
+    > gene_pavs.bedgraph
     """
 }
 
