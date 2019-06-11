@@ -60,6 +60,7 @@ process mumalign {
     """
     nucmer \
       --threads=${task.cpus} \
+      --maxmatch \
       --delta=${query.baseName}.delta \
       ${ref} \
       ${query}
@@ -336,7 +337,7 @@ process plotCoverages {
 
     tag "${ref} - ${window_size}"
 
-    publishDir "${params.outdir}/coverage_plots"
+    publishDir "${params.outdir}/coverage_plots/${ref}"
 
     input:
     set val(ref), file(index), val(window_size), file(bg) from referenceIndex4PlotCoverages
@@ -347,7 +348,7 @@ process plotCoverages {
     set val(ref), val(window_size), file("${ref}") into coveragePlots
 
     """
-    plot_circos.R --bedgraph "${bg}" --faidx "${index}" --outdir "${ref}"
+    plot_circos.R --bedgraph "${bg}" --faidx "${index}" --outdir "${window_size}"
     """
 }
 
