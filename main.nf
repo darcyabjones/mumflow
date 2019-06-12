@@ -387,7 +387,7 @@ process plotCoverages {
         .combine( meanWindowedCoverage, by: 0 )
 
     output:
-    set val(ref), val(window_size), file("${ref}") into coveragePlots
+    set val(ref), val(window_size), file("${window_size}") into coveragePlots
 
     """
     plot_circos.R --bedgraph "${bg}" --faidx "${index}" --outdir "${window_size}"
